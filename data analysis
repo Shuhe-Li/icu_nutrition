@@ -1,0 +1,572 @@
+library(pacman)
+pacman::p_load(dplyr, GGally, ggplot2, ggthemes, ggvis, httr, lubridate, 
+               plotly, rio, rmarkdown, shiny, glmnet, leaps, bestglm, dummies, 
+               stringr, tidyr, Hmisc, arsenal, survminer, survival)
+
+cal <- import("C:/File/Study/Data Mining/Nutrition study/MIMICIV.nutrition.rawdata2.csv")
+
+load(file = "C:/File/Study/Data Mining/Nutrition study/cal.rda")
+
+# adult
+cal <- cal[cal$admission_age >= 18,]
+# los >= 7
+cal <- cal[cal$los_icu>=7, ]
+# administered PN or EN
+cal <- cal[cal$EN_flag==1 | cal$PN_flag==1,]
+# with height (calculated ideal weight)
+cal$gender <- as.factor(cal$gender)
+cal <- cal[!is.na(cal$gender),]
+
+# bmi
+# Remove weights below 30kg and above 300kg
+cal$weight[cal$weight < 30 | cal$weight > 300] <- NA
+# Compute the body mass index
+cal$BMI <- cal$weight / (cal$height/100)^2
+
+cal$BMI_category <- cut(cal$BMI,
+                        breaks=c(-Inf,18.5,25,30,Inf),right = FALSE)
+cal$BMI_category <- factor(cal$BMI_category, 
+                           levels=c("[-Inf,18.5)", "[18.5,25)", "[25,30)", "[30, Inf)"),
+                           labels=c("Underweight", "Normal weight", "Overweight", "Obese"))
+
+# actual weight 
+cal <- cal[!(is.na(cal$height) | is.na(cal$weight)), ]
+cal$idweight <- ifelse(cal$gender=='M',56.2+0.009252*cal$height,53.1+0.008924*cal$height)
+
+# daily calories per kg
+cal$d1_calories_all[is.na(cal$d1_calories_all)] = 0
+cal$d2_calories_all[is.na(cal$d2_calories_all)] = 0
+cal$d3_calories_all[is.na(cal$d3_calories_all)] = 0
+cal$d4_calories_all[is.na(cal$d4_calories_all)] = 0
+cal$d5_calories_all[is.na(cal$d5_calories_all)] = 0
+cal$d6_calories_all[is.na(cal$d6_calories_all)] = 0
+cal$d7_calories_all[is.na(cal$d7_calories_all)] = 0
+
+cal$d1_calories_all_kg <- cal$d1_calories_all / cal$idweight
+cal$d2_calories_all_kg <- cal$d2_calories_all / cal$idweight
+cal$d3_calories_all_kg <- cal$d3_calories_all / cal$idweight
+cal$d4_calories_all_kg <- cal$d4_calories_all / cal$idweight
+cal$d5_calories_all_kg <- cal$d5_calories_all / cal$idweight
+cal$d6_calories_all_kg <- cal$d6_calories_all / cal$idweight
+cal$d7_calories_all_kg <- cal$d7_calories_all / cal$idweight
+
+# daily protein per kg
+cal$d1_protein_all[is.na(cal$d1_protein_all)] = 0
+cal$d2_protein_all[is.na(cal$d2_protein_all)] = 0
+cal$d3_protein_all[is.na(cal$d3_protein_all)] = 0
+cal$d4_protein_all[is.na(cal$d4_protein_all)] = 0
+cal$d5_protein_all[is.na(cal$d5_protein_all)] = 0
+cal$d6_protein_all[is.na(cal$d6_protein_all)] = 0
+cal$d7_protein_all[is.na(cal$d7_protein_all)] = 0
+
+cal$d1_protein_all_kg <- cal$d1_protein_all / cal$idweight
+cal$d2_protein_all_kg <- cal$d2_protein_all / cal$idweight
+cal$d3_protein_all_kg <- cal$d3_protein_all / cal$idweight
+cal$d4_protein_all_kg <- cal$d4_protein_all / cal$idweight
+cal$d5_protein_all_kg <- cal$d5_protein_all / cal$idweight
+cal$d6_protein_all_kg <- cal$d6_protein_all / cal$idweight
+cal$d7_protein_all_kg <- cal$d7_protein_all / cal$idweight
+
+#day4-7 daily calories per kg
+
+
+cal$d4t7_calories_all_kg <- (cal$d4_calories_all+cal$d5_calories_all+cal$d6_calories_all
+                             +cal$d7_calories_all)/cal$idweight/4
+
+cal$d4t7_group <- cut(cal$d4t7_calories_all_kg,
+                      breaks = c(-Inf,20,Inf),right = FALSE)
+cal$d4t7_group <- factor(cal$d4t7_group,
+                         levels = c("[-Inf,20)","[20, Inf)"),
+                         labels = c("Hypocaloric","Normocaloric"))
+
+#day1-3 daily calories per kg
+cal$d1t3_calories_all_kg <- (cal$d1_calories_all+cal$d2_calories_all+cal$d3_calories_all)/cal$idweight/3
+cal$d1t3_protein_all_kg <- (cal$d1_protein_all+cal$d2_protein_all+cal$d3_protein_all)/cal$idweight/3
+
+#day4-7 daily proteins intake
+cal$d4t7_protein_all_kg <- (cal$d4_protein_all+cal$d5_protein_all+cal$d6_protein_all
+                             +cal$d7_protein_all)/cal$idweight/4
+cal$d4t7_protein_group <- cut(cal$d4t7_protein_all_kg,
+                              breaks = c(-Inf,1,Inf),right = FALSE)
+cal$d4t7_protein_group <- factor(cal$d4t7_protein_group,
+                                 levels = c("[-Inf,1)","[1, Inf)"),
+                                 labels = c("Hypoprotein","Normoprotein"))
+
+#data cleanse
+cal$race <- as.factor(cal$race)
+levels(cal$race)[levels(cal$race) %in% 
+                        c('UNABLE TO OBTAIN', 'UNKNOWN','OTHER',
+                          'AMERICAN INDIAN/ALASKA NATIVE','MIDDLE EASTERN','MULTI RACE ETHNICITY',
+                          'NATIVE HAWAIIAN OR OTHER PACIFIC ISLANDER',
+                          'PATIENT DECLINED TO ANSWER','UNKNOWN/NOT SPECIFIED','SOUTH AMERICAN',
+                          'MULTIPLE RACE/ETHNICITY')] = 'Other/Unknown'
+levels(cal$race)[levels(cal$race) %in% c('ASIAN','ASIAN - ASIAN INDIAN','ASIAN - CAMBODIAN',
+                                                   'ASIAN - CHINESE','ASIAN - FILIPINO',
+                                                   'ASIAN - JAPANESE','ASIAN - KOREAN','ASIAN - OTHER',
+                                                   'ASIAN - THAI','ASIAN - VIETNAMESE','ASIAN - SOUTH EAST ASIAN')] = 'Asian'
+levels(cal$race)[levels(cal$race) %in% c('BLACK/AFRICAN AMERICAN','BLACK/AFRICAN',
+                                                   'BLACK/CAPE VERDEAN','BLACK/HAITIAN','BLACK/CARIBBEAN ISLAND')] = 'African American'
+levels(cal$race)[levels(cal$race) %in% c('HISPANIC/LATINO','HISPANIC OR LATINO',
+                                                   'HISPANIC/LATINO - CENTRAL AMERICAN (OTHER)',
+                                                   'HISPANIC/LATINO - COLOMBIAN','HISPANIC/LATINO - CUBAN',
+                                                   'HISPANIC/LATINO - DOMINICAN','HISPANIC/LATINO - GUATEMALAN',
+                                                   'HISPANIC/LATINO - MEXICAN','HISPANIC/LATINO - PUERTO RICAN',
+                                                   'HISPANIC/LATINO - SALVADORAN','HISPANIC/LATINO - COLUMBIAN',
+                                         'HISPANIC/LATINO - CENTRAL AMERICAN','HISPANIC/LATINO - HONDURAN')] = 'Hispanic'
+levels(cal$race)[levels(cal$race) %in% c('WHITE','PORTUGUESE','WHITE - BRAZILIAN',
+                                                   'WHITE - EASTERN EUROPEAN','WHITE - OTHER EUROPEAN',
+                                                   'WHITE - RUSSIAN')] = 'Caucasian'
+
+# flag transformation
+cal$hospital_expire_flag <- as.factor(cal$hospital_expire_flag)
+cal$icu_expire_flag <- as.factor(cal$icu_expire_flag)
+cal$first_careunit <- as.factor(cal$first_careunit)
+levels(cal$first_careunit)[levels(cal$first_careunit) %in% c('Neuro Intermediate','Neuro Stepdown',
+                                                             'Neuro Surgical Intensive Care Unit (Neuro SICU)')] = 'Neuro ICU'
+levels(cal$first_careunit)[levels(cal$first_careunit) %in% c('Coronary Care Unit (CCU)',
+                                                             'Cardiac Vascular Intensive Care Unit (CVICU)')] = 'Cardiac ICU'
+levels(cal$first_careunit)[levels(cal$first_careunit) %in% c('Surgical Intensive Care Unit (SICU)','Trauma SICU (TSICU)')] = 'SICU/TSICU'
+
+cal$discharge_location <- as.factor(cal$discharge_location)
+levels(cal$discharge_location)[levels(cal$discharge_location) %in% c("REHAB","CHRONIC/LONG TERM ACUTE CARE")] = "Rehabilitation and long-term care"
+levels(cal$discharge_location)[levels(cal$discharge_location) %in% c("ACUTE HOSPITAL","HEALTHCARE FACILITY","HOSPICE","OTHER FACILITY",
+                                                                     "PSYCH FACILITY","SKILLED NURSING FACILITY")] = "Healthcare facility"
+levels(cal$discharge_location)[levels(cal$discharge_location) %in% c("HOME","HOME HEALTH CARE")] = "Home"
+levels(cal$discharge_location)[levels(cal$discharge_location) %in% c("","AGAINST ADVICE","ASSISTED LIVING","DIED")] = "Died/Other"
+
+cal$survival_durations[cal$survival_durations<=0] <- NA
+cal$onemonth_mortality <- as.factor(ifelse(cal$survival_durations >= 28 | cal$survival_durations %in% NA, 0, 1))
+cal$threemonth_mortality <- as.factor(ifelse(cal$survival_durations >= 90 | cal$survival_durations %in% NA, 0, 1))
+cal$oneyear_mortality <- as.factor(ifelse(cal$survival_durations >= 365 | cal$survival_durations %in% NA, 0, 1))
+
+cal$diabetes <- as.factor(cal$diabetes)
+cal$MI <- as.factor(cal$MI)
+cal$CHF <- as.factor(cal$CHF)
+cal$CVD <- as.factor(cal$CVD)
+cal$cpd <- as.factor(cal$cpd)
+cal$cancer <- as.factor(cal$cancer)
+cal$hypertension_flag <- as.factor(cal$hypertension_flag)
+cal$ckd_flag <- as.factor(cal$ckd_flag)
+cal$sepsis_flag <- as.factor(cal$sepsis_flag)
+cal$invasive_flag <- as.factor(ifelse(cal$invasive_flag %in% 0 | cal$invasive_flag %in% NA, 0, 1))
+cal$crrt_flag <- as.factor(ifelse(cal$crrt_flag %in% 0 | cal$crrt_flag %in% NA, 0, 1))
+cal$vaso_flag <- as.factor(ifelse(cal$vaso_flag %in% 0 | cal$vaso_flag %in% NA, 0, 1))
+cal$hyperglu_flag <- as.factor(cal$hyperglu_flag)
+cal$hypoglu_flag <- as.factor(cal$hypoglu_flag)
+cal$PN_flag <- as.factor(cal$PN_flag)
+cal$EN_flag <- as.factor(cal$EN_flag)
+
+cal$gastricresidual_flag <- as.factor(ifelse(cal$d1_tfresidual >= 300| cal$d2_tfresidual >=300|
+                                             cal$d3_tfresidual >=300 | cal$d4_tfresidual >= 300 |
+                                               cal$d5_tfresidual >=300 | cal$d6_tfresidual >= 300|
+                                               cal$d7_tfresidual >=300, 1, 0))
+
+cal$anchor_year_group <- as.factor(cal$anchor_year_group)
+cal$admission_type <- as.factor(cal$admission_type)
+cal$discharge_location <- as.factor(cal$discharge_location)
+
+cal$infection_flag <- as.factor(ifelse(cal$infection_flag %in% 0 | cal$infection_flag %in% NA, 0 , 1))
+cal$blood_flag <- as.factor(ifelse(cal$blood_flag %in% 0 | cal$blood_flag %in% NA, 0 , 1))
+cal$resp_flag <- as.factor(ifelse(cal$resp_flag %in% 0 | cal$resp_flag %in% NA, 0 , 1))
+cal$gatricintest_flag <- as.factor(ifelse(cal$gatricintest_flag %in% 0 | cal$gatricintest_flag %in% NA, 0 , 1))
+cal$uro_flag <- as.factor(ifelse(cal$uro_flag %in% 0 | cal$uro_flag %in% NA, 0 , 1))
+
+cal$gastricresidual_flag <- as.factor(ifelse(cal$gastricresidual_flag %in% 0 | cal$gastricresidual_flag %in% NA, 0, 1))
+
+cal$venthours[cal$venthours %in% NA] = 0
+cal$ventfreedays <- cal$los_icu - (cal$venthours/24)
+cal$vasohours[cal$vasohours %in% NA] = 0
+cal$vasofreedays <- cal$los_icu - (cal$vasohours/24)
+cal$vasofreedays[cal$vasofreedays <= 0] = 0
+
+cal$venthours <- cal$venthours/24
+cal$vasohours <- cal$vasohours/24
+
+cal$icu_intime <- as.POSIXct(cal$icu_intime)
+cal$EN_start[cal$EN_start %in% ""] = NA
+cal$EN_start <- as.POSIXct(cal$EN_start)
+cal$PN_start[cal$PN_start %in% ""] = NA
+cal$PN_start <- as.POSIXct(cal$PN_start)
+
+cal$ENstarttime <- as.numeric(difftime(cal$EN_start, cal$icu_intime, units = "days")) 
+cal$PNstarttime <- as.numeric(difftime(cal$PN_start, cal$icu_intime, units = "days")) 
+
+cal <- transform(cal, nutrition_start = pmin(cal$ENstarttime, cal$PNstarttime, na.rm = T))
+
+# Na: <135, >145, K: <3.5, >5.5; P: fell by 0.16 (2.88mg/dL) or! < 0.65mmol/L (11.7mg/dL); 
+# high-bilirubin: total > 1.2
+cal$hypona_flag <- as.factor(ifelse(cal$Na_min < 135, 1, 0))
+cal$hyperna_flag <- as.factor(ifelse(cal$Na_max > 145, 1, 0))
+cal$hypok_flag <- as.factor(ifelse(cal$K_min < 3.5, 1, 0))
+cal$hyperk_flag <- as.factor(ifelse(cal$K_max > 5.5, 1, 0))
+cal$deltaP <- cal$P_max - cal$P_min
+cal$hypoP_flag <- as.factor(ifelse(cal$deltaP > 2.88 | cal$P_min < 11.7, 1 , 0))
+cal$hyperbili_flag <- as.factor(ifelse(cal$Tbil_max > 1.2, 1, 0))
+
+# REE
+cal$gender_flag <- ifelse(cal$gender == 'M', 1, 0)
+cal$obese_flag <- ifelse(cal$BMI_category %in% 'Obese', 1, 0)
+
+cal$REE <- ifelse(cal$invasive_flag == 1, 
+                  1925-10*cal$admission_age+5*cal$weight+281*cal$gender_flag+292*cal$trauma_flag+851*cal$burn_flag,
+                  629-11*cal$admission_age+25*cal$weight+609*cal$obese_flag)
+
+cal$calories_REE_percent <- cal$d4t7_calories_all_kg/(cal$REE/cal$idweight)
+
+
+# save final cohort
+write.csv(cal,"C:/File/Study/Data Mining/Nutrition study/MIMICIV.nutrition.process1.csv", row.names = FALSE)
+save(cal, file = "C:/File/Study/Data Mining/Nutrition study/cal.rda")
+
+cal_part <- cal[, c("d4t7_group","d1_calories_all_kg","d2_calories_all_kg","d3_calories_all_kg","d4_calories_all_kg",  
+                    "d5_calories_all_kg","d6_calories_all_kg","d7_calories_all_kg","d1_protein_all_kg","d2_protein_all_kg",
+                    "d3_protein_all_kg","d4_protein_all_kg","d5_protein_all_kg","d6_protein_all_kg",  
+                    "d7_protein_all_kg","d1_calories_all","d1_protein_all","d1_vol_all","d1_calories_EN","d1_protein_EN","d1_vol_EN",
+                    "d1_calories_PN","d1_protein_PN","d1_vol_PN","d2_calories_all","d2_protein_all","d2_vol_all",          
+                    "d2_calories_EN","d2_protein_EN","d2_vol_EN","d2_calories_PN","d2_protein_PN","d2_vol_PN",           
+                    "d3_calories_all","d3_protein_all","d3_vol_all","d3_calories_EN","d3_protein_EN","d3_vol_EN",           
+                    "d3_calories_PN","d3_protein_PN","d3_vol_PN" ,"d4_calories_all","d4_protein_all","d4_vol_all",          
+                    "d4_calories_EN","d4_protein_EN","d4_vol_EN","d4_calories_PN","d4_protein_PN","d4_vol_PN",           
+                    "d5_calories_all","d5_protein_all","d5_vol_all","d5_calories_EN","d5_protein_EN","d5_vol_EN",           
+                    "d5_calories_PN","d5_protein_PN","d5_vol_PN","d6_calories_all","d6_protein_all","d6_vol_all",          
+                    "d6_calories_EN","d6_protein_EN","d6_vol_EN","d6_calories_PN","d6_protein_PN","d6_vol_PN",           
+                    "d7_calories_all","d7_protein_all","d7_vol_all","d7_calories_EN","d7_protein_EN","d7_vol_EN",           
+                    "d7_calories_PN", "d7_protein_PN","d7_vol_PN","d1_insulin","d2_insulin","d3_insulin","d4_insulin",
+                    "d5_insulin","d6_insulin","d7_insulin","d1_tfresidual","d2_tfresidual","d3_tfresidual","d4_tfresidual",       
+                    "d5_tfresidual","d6_tfresidual","d7_tfresidual","d1_glu","d2_glu","d3_glu","d4_glu","d5_glu","d6_glu","d7_glu")]
+
+table0 <- tableby(d4t7_protein_group ~ d4t7_group,
+                  data = cal, control = my_controls)
+summary(table0, text = TRUE)
+                          
+write.csv(cal_part,"C:/File/Study/Data Mining/Nutrition study/MIMICIV.nutrition.picsample.csv", row.names = FALSE)
+
+# table 1: baseline features
+my_controls <- tableby.control(
+  test = T,
+  total = T,
+  numeric.test = "kwt", cat.test = "chisq",
+  numeric.stats = c("meansd", "medianq1q3", "Nmiss2"),
+  cat.stats = c("countpct", "Nmiss2"),
+  stats.labels = list(
+    meansd = "Mean (SD)",
+    medianq1q3 = "Median (Q1, Q3)",
+    Nmiss2 = "Missing")
+)
+
+my_labels <- list(
+  gender = "Male, %",
+  admission_age = "Age, years", 
+  BMI = "BMI, kg/m2", 
+  race = "Ethnicity, %",
+  hospital_expire_flag="In-hospital mortality, %", 
+  icu_expire_flag="ICU mortality, %", 
+  los_hospital="Hospital LOS, days", 
+  los_icu="ICU LOS, days", 
+  first_careunit = "Admitted ICU type, %", 
+  diabetes = "Diabetes mellitus, %",
+  MI = "Myocardial infarction, %",
+  CHF="Congestive heart failure, %",
+  CVD = "Cardiovascular disorders, %",
+  cpd = "COPD, %",
+  cancer = "Cancer, %",
+  hypertension_flag = "Hypertension, %",
+  ckd_flag = "CKD, %", 
+  sepsis_flag = "Sepsis, %",
+  SOFA = "SOFA score",
+  SAPSII = "SAPS-II score",
+  LODS = "LODS score",
+  invasive_flag="Mechanical Ventilation, %", 
+  venthours = "Ventilation duration, days",
+  ventfreedays = "Ventilator-free days",
+  crrt_flag = "RRT, %",
+  vaso_flag="Vasopressor, %", 
+  vasofreedays = "Vasopressor-free days",
+  vasohours = "Vasopressor duration, days",
+  ALB_min = "Minimum albumin, g/dL",
+  Tbil_max = "Maximum total bilirubin, mg/dL",
+  TG_max = "Maximum triglycerides, mg/dL",
+  TC_max = "Maximum total cholesterol, mg/dL",
+  LDL_max = "Maximum LDL, mg/dL",
+  HDL_max = "Maximum HDL, mg/dL",
+  hyperglu_flag = "Hyperglycemia, %",
+  hypoglu_flag = "Hypoglycemia, %",
+  PN_flag = "Parenteral nutrition, %",
+  EN_flag = "Enteral nutrition, %",
+  nutrition_start = "Days before administering nutrition",
+  infection_flag = "Infection, %",
+  blood_flag = "Bloodstream",
+  resp_flag = "Respiratory",
+  gatricintest_flag = "Abdominal",
+  uro_flag = "Urogenital",
+  onemonth_mortality = "28-day mortality, %",
+  threemonth_mortality = "90-day mortality, %",
+  oneyear_mortality = "1-year mortality, %",
+  gastricresidual_flag = "Gastrointestinal intolerance, %",
+  hypona_flag = "Hyponatremia, %",
+  hyperna_flag = "Hypernatremia, %",
+  hypok_flag = "Hypokalemia, %",
+  hyperk_flag = "Hyperkalemia, %",
+  hypoP_flag = "Hypophosphatemia, %",
+  REE = "Energy expenditure, Kcal",
+  calories_REE_percent = "Calories delivered/energy expenditure, %",
+  discharge_location = "Discharge location, %"
+)
+
+table1 <- tableby(d4t7_group ~ admission_age + gender + BMI + SOFA + LODS + SAPSII
+                  + first_careunit + race + diabetes + MI + CHF + CVD + cpd + cancer
+                  + hypertension_flag + ckd_flag + discharge_location,
+                  data = cal, control = my_controls)
+summary(table1, labelTranslations = my_labels, text = TRUE)
+
+# post hoc
+qqnorm(cal$SAPSII)
+
+cal$race1[cal$discharge_location %in% c("Died/Other","Healthcare facility",
+                                    "Rehabilitation and long-term care")] = "Non-Race"
+cal$race1[cal$discharge_location %in% c("Home")] = "Yes-Race"
+cal$race1 <- as.factor(cal$race1)
+
+h <- table(cal$race1, cal$d4t7_group)
+chisq.test(h)
+
+
+# table 2: nutritional details
+table2 <- tableby(d4t7_group ~ EN_flag + PN_flag + nutrition_start + REE + calories_REE_percent
+                  + ALB_min + Tbil_max + TG_max + TC_max + LDL_max + HDL_max + 
+                  + hyperglu_flag + hypoglu_flag + hypona_flag + hyperna_flag + hypok_flag + hyperk_flag 
+                  + hypoP_flag + gastricresidual_flag,
+                  data = cal, control = my_controls)
+
+summary(table2, labelTranslations = my_labels, text = TRUE)
+
+qqnorm(cal$HDL_max)
+
+
+# table 3: clinical outcomes
+table3 <- tableby(d4t7_group ~  invasive_flag + venthours + ventfreedays + crrt_flag + vaso_flag + vasohours + vasofreedays
+                  + infection_flag + blood_flag + resp_flag + gatricintest_flag + uro_flag + sepsis_flag
+                  + los_icu + los_hospital + icu_expire_flag + hospital_expire_flag
+                  + threemonth_mortality + oneyear_mortality,
+                  data = cal, control = my_controls)
+
+summary(table3, labelTranslations = my_labels, text = TRUE)
+
+qqnorm(cal$los_hospital)
+
+
+# logistics regression
+cal_EN <- cal[cal$EN_flag %in% "1", ]
+
+model1 <- glm(hospital_expire_flag ~ relevel(d4t7_group, "Normocaloric") + admission_age + gender + BMI + SAPSII + invasive_flag + vaso_flag + crrt_flag
+             + PN_flag + d1t3_calories_all_kg + d1t3_protein_all_kg + d4t7_protein_all_kg,
+             data = cal_EN, family = binomial)
+
+exp(cbind("Odds ratio" = coef(model1), confint.default(model1, level = 0.95)))  
+summary(model1)
+
+
+model2 <- glm(threemonth_mortality ~ relevel(d4t7_group, "Normocaloric") + admission_age + gender + BMI + SAPSII + invasive_flag + vaso_flag + crrt_flag
+              + PN_flag + d1t3_calories_all_kg + d1t3_protein_all_kg + d4t7_protein_all_kg,
+              data = cal_EN, family = binomial)
+
+exp(cbind("Odds ratio" = coef(model2), confint.default(model2, level = 0.95)))  
+summary(model2)
+
+
+model3 <- glm(oneyear_mortality ~ relevel(d4t7_group, "Normocaloric") + admission_age + gender + BMI + SAPSII + invasive_flag + vaso_flag + crrt_flag
+              + PN_flag + d1t3_calories_all_kg + d1t3_protein_all_kg + d4t7_protein_all_kg,
+              data = cal_EN, family = binomial)
+
+exp(cbind("Odds ratio" = coef(model3), confint.default(model3, level = 0.95)))  
+summary(model3)
+
+
+# KM curve
+cal$survival_durations[cal$survival_durations %in% NA] = 4000
+survival <- cal[,"survival_durations"]
+
+death <- as.numeric(cal[,"oneyear_mortality"])
+groups <- cal[,"d4t7_group"]
+fit <- survfit(Surv(survival, death) ~ groups, data = cal)
+
+h1 <- ggsurvplot(
+  fit,                     # survfit object with calculated statistics.
+  data = cal,            
+  pval = TRUE, fun = "pct",        
+  xlim = c(0,365), break.time.by = 30, linetype = "strata", size = 1,
+  risk.table = TRUE, risk.table.y.text.col = T, risk.table.y.text = FALSE, 
+  xlab = "Days after ICU admission", legend = "bottom", 
+  legend.title = "Nutritional strategy",
+  legend.labs = c("Hypocaloric", "Normocaloric"), 
+  censor=FALSE,
+  ggtheme = theme_gray(), title = "1-year survival curve") 
+
+
+# non-nutritional
+cal$d1_calories_nonutri <- cal$d1_calories_all - cal$d1_calories_EN - cal$d1_calories_PN
+cal$d2_calories_nonutri <- cal$d2_calories_all - cal$d2_calories_EN - cal$d2_calories_PN
+cal$d3_calories_nonutri <- cal$d3_calories_all - cal$d3_calories_EN - cal$d3_calories_PN
+cal$d4_calories_nonutri <- cal$d4_calories_all - cal$d4_calories_EN - cal$d4_calories_PN
+cal$d5_calories_nonutri <- cal$d5_calories_all - cal$d5_calories_EN - cal$d5_calories_PN
+cal$d6_calories_nonutri <- cal$d6_calories_all - cal$d6_calories_EN - cal$d6_calories_PN
+cal$d7_calories_nonutri <- cal$d7_calories_all - cal$d7_calories_EN - cal$d7_calories_PN
+
+table01 <- tableby(d4t7_group ~ d1_calories_all+d2_calories_all+d3_calories_all+d4_calories_all+d5_calories_all+d6_calories_all+d7_calories_all
+                   +d1_calories_EN+d2_calories_EN+d3_calories_EN+d4_calories_EN+d5_calories_EN+d6_calories_EN+d7_calories_EN
+                   +d1_calories_PN+d2_calories_PN+d3_calories_PN+d4_calories_PN+d5_calories_PN+d6_calories_PN+d7_calories_PN
+                   +d1_calories_nonutri+d2_calories_nonutri+d3_calories_nonutri+d4_calories_nonutri+d5_calories_nonutri+d6_calories_nonutri+d7_calories_nonutri,
+                  data = cal, control = my_controls)
+summary(table01, text = TRUE)
+
+
+# spine
+pacman::p_load(rms,ggrcs,interactionRCS)
+#install.packages('interactionRCS')
+
+cal$calories_REE_percent1 <- cal$calories_REE_percent*100
+dd<-datadist(cal)
+options(datadist='dd')
+
+fit1 <- cph(Surv(survival, death)~rcs(calories_REE_percent1, 
+                                      knots=c(.05, .275, .5, .725, .95))
+            , x=TRUE, y=TRUE, data = cal)
+            
+anova(fit1)
+pic <- ggplot(Predict(fit1, calories_REE_percent1, fun=exp))+
+  labs(x="Calories intake/Energy expenditure (%)", y= "1-year hazard ratio")+
+  theme_bw()+
+  geom_line(color="black", size =1)
+       
+ggsave(filename = "C:/File/Study/Data Mining/Nutrition study/figure/fig5.tiff", pic, width = 7, dpi = 300)
+
+
+cal$calories_REE_percent_group <- factor(cut(cal$calories_REE_percent1,
+                                      breaks = c(-Inf,40,70,90,Inf),right = FALSE))
+cal$calories_REE_percent_group <- relevel(cal$calories_REE_percent_group, ref = "[40,70)")
+
+fit2 <- cph(Surv(survival, death)~  calories_REE_percent_group, data = cal)
+exp(cbind("Hazards ratio" = coef(fit2), confint.default(fit2, level = 0.95)))  
+
+
+# forest plot
+pacman::p_load(forestplot, haven, gridExtra)
+
+# Age: < 65; >=65
+cal_age1 <- cal[cal$admission_age < 65,]
+cal_age2 <- cal[cal$admission_age >= 65,]
+
+model_age1 <- glm(oneyear_mortality ~ relevel(d4t7_group, "Normocaloric") + SAPSII,
+              data = cal_age1, family = binomial)
+exp(cbind("Odds ratio" = coef(model_age1), confint.default(model_age1, level = 0.95)))  
+summary(model_age1)
+
+model_age2 <- glm(oneyear_mortality ~ relevel(d4t7_group, "Normocaloric") + SAPSII,
+                  data = cal_age2, family = binomial)
+exp(cbind("Odds ratio" = coef(model_age2), confint.default(model_age2, level = 0.95)))  
+summary(model_age2)
+
+# BMI categories
+cal_BMI1 <- cal[cal$BMI_category %in% 'Underweight',]
+cal_BMI2 <- cal[cal$BMI_category %in% 'Normal weight',]
+cal_BMI3 <- cal[cal$BMI_category %in% 'Overweight',]
+cal_BMI4 <- cal[cal$BMI_category %in% 'Obese',]
+
+model_BMI1 <- glm(oneyear_mortality ~ relevel(d4t7_group, "Normocaloric") + SAPSII,
+                  data = cal_BMI1, family = binomial)
+exp(cbind("Odds ratio" = coef(model_BMI1), confint.default(model_BMI1, level = 0.95)))  
+summary(model_BMI1)
+
+model_BMI2 <- glm(oneyear_mortality ~ relevel(d4t7_group, "Normocaloric") + SAPSII,
+                  data = cal_BMI2, family = binomial)
+exp(cbind("Odds ratio" = coef(model_BMI2), confint.default(model_BMI2, level = 0.95)))  
+summary(model_BMI2)
+
+model_BMI3 <- glm(oneyear_mortality ~ relevel(d4t7_group, "Normocaloric") + SAPSII,
+                  data = cal_BMI3, family = binomial)
+exp(cbind("Odds ratio" = coef(model_BMI3), confint.default(model_BMI3, level = 0.95)))  
+summary(model_BMI3)
+
+model_BMI4 <- glm(oneyear_mortality ~ relevel(d4t7_group, "Normocaloric") + SAPSII,
+                  data = cal_BMI4, family = binomial)
+exp(cbind("Odds ratio" = coef(model_BMI4), confint.default(model_BMI4, level = 0.95)))  
+summary(model_BMI4)
+
+# Diabetes
+cal_dia1 <- cal[cal$diabetes == 0,]
+cal_dia2 <- cal[cal$diabetes == 1,]
+
+model_dia1 <- glm(oneyear_mortality ~ relevel(d4t7_group, "Normocaloric") + SAPSII,
+                  data = cal_dia1, family = binomial)
+exp(cbind("Odds ratio" = coef(model_dia1), confint.default(model_dia1, level = 0.95)))  
+summary(model_dia1)
+
+model_dia2 <- glm(oneyear_mortality ~ relevel(d4t7_group, "Normocaloric") + SAPSII,
+                  data = cal_dia2, family = binomial)
+exp(cbind("Odds ratio" = coef(model_dia2), confint.default(model_dia2, level = 0.95)))  
+summary(model_dia2)
+
+# SPN
+cal_spn1 <- cal[cal$EN_flag == 1 & cal$PN_flag == 0,]
+cal_spn2 <- cal[cal$EN_flag == 1 & cal$PN_flag == 1,]
+
+model_spn1 <- glm(oneyear_mortality ~ relevel(d4t7_group, "Normocaloric") + SAPSII,
+                  data = cal_spn1, family = binomial)
+exp(cbind("Odds ratio" = coef(model_spn1), confint.default(model_spn1, level = 0.95)))  
+summary(model_spn1)
+
+model_spn2 <- glm(oneyear_mortality ~ relevel(d4t7_group, "Normocaloric") + SAPSII,
+                  data = cal_spn2, family = binomial)
+exp(cbind("Odds ratio" = coef(model_spn2), confint.default(model_spn2, level = 0.95)))  
+summary(model_spn2)
+
+# Protein intake: < 1; >= 1
+cal_pro1 <- cal[cal$d4t7_protein_group %in% 'Hypoprotein',]
+cal_pro2 <- cal[cal$d4t7_protein_group %in% 'Normoprotein',]
+
+model_pro1 <- glm(oneyear_mortality ~ relevel(d4t7_group, "Normocaloric") + SAPSII,
+                  data = cal_pro1, family = binomial)
+exp(cbind("Odds ratio" = coef(model_pro1), confint.default(model_pro1, level = 0.95)))  
+summary(model_pro1)
+
+model_pro2 <- glm(oneyear_mortality ~ relevel(d4t7_group, "Normocaloric") + SAPSII,
+                  data = cal_pro2, family = binomial)
+exp(cbind("Odds ratio" = coef(model_pro2), confint.default(model_pro2, level = 0.95)))  
+summary(model_pro2)
+
+# Ventilation
+cal_ven1 <- cal[cal$invasive_flag == 0,]
+cal_ven2 <- cal[cal$invasive_flag == 1,]
+
+model_ven1 <- glm(oneyear_mortality ~ relevel(d4t7_group, "Normocaloric") + SAPSII,
+                  data = cal_ven1, family = binomial)
+exp(cbind("Odds ratio" = coef(model_ven1), confint.default(model_ven1, level = 0.95)))  
+summary(model_ven1)
+
+model_ven2 <- glm(oneyear_mortality ~ relevel(d4t7_group, "Normocaloric") + SAPSII,
+                  data = cal_ven2, family = binomial)
+exp(cbind("Odds ratio" = coef(model_ven2), confint.default(model_ven2, level = 0.95)))  
+summary(model_ven2)
+
+# Vasopressor
+cal_vas1 <- cal[cal$vaso_flag == 0,]
+cal_vas2 <- cal[cal$vaso_flag == 1,]
+
+model_vas1 <- glm(oneyear_mortality ~ relevel(d4t7_group, "Normocaloric") + SAPSII,
+                  data = cal_vas1, family = binomial)
+exp(cbind("Odds ratio" = coef(model_vas1), confint.default(model_vas1, level = 0.95)))  
+summary(model_vas1)
+
+model_vas2 <- glm(oneyear_mortality ~ relevel(d4t7_group, "Normocaloric") + SAPSII,
+                  data = cal_vas2, family = binomial)
+exp(cbind("Odds ratio" = coef(model_vas2), confint.default(model_vas2, level = 0.95)))  
+summary(model_vas2)
+
+forplot <- import("C:/File/Study/Data Mining/Nutrition study/figure/nutrition.csv")
+attach(forplot)
+forestplot(dt=forplot,as.matrix(forplot[,1:3]), OR, LowerCI, UpperCI, 
+           graph.pos=2, zero=1, graphwidth=unit(50,"mm"), lineheight="auto",
+           boxsize=0.2, xticks=(c(0.25,0.5,0.75,1.0,1.25,1.5)),col = fpColors(lines="black", box="black"),
+           ci.vertices=TRUE, ci.vertices.height = 0.15,
+           xlab="<---Favors survival---             ---Opposes survival--->", 
+           txt_gp = fpTxtGp(cex=1.0))
