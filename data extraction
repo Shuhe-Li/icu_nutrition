@@ -1,0 +1,780 @@
+-- Nutrition study in MIMIC-IV
+-- 2022.08
+
+with height as
+(
+    select stay_id, MAX(height) as height
+    from `physionet-data.mimiciv_derived.height`
+    group by stay_id
+    order by stay_id
+),
+comorbidities as
+(
+    select distinct hadm_id,
+    MAX(case when icd_code in ('4010','4011','4019','40501','40509','40511','40519','40591','40599','64210','64211','64212','64213','64214','64220','64221','64222','64223','64224',
+    'I10','I15','I150','I151','I152','I158','I159','O10','O100','O1001','O10011','O10012','O10013','O10019','O1002','O1003','O104','O1041','O10411','O10412',
+    'O10413','O10419','O1042','O1043','O109','O1091','O10911','O10912','O10913','O10919','O1092','O1093','O11','O111','O112','O113','O114','O115','O119') then 1 else 0 end) as hypertension_flag,
+    MAX(case when icd_code in ('28521','40300','40301','40310','40311','40390','40391','40400','40401','40402','40403','40410','40411','40412','40413','40490','40491','40492','40493',
+    '5851','5852','5853','5854','5855','5859','D631','E0822','E0922','E1022','E1122','E1322','I12','I120','I129','I13','I130','I131','I1310','I1311','I132','N18',
+    'N181','N182','N183','N184','N185','N189','O102','O1021','O10211','O10212','O10213','O10219','O1022','O1023','O103','O1031','O10311','O10312','O10313','O10319',
+    'O1032','O1033') then 1 else 0 end) as ckd_flag
+    from `physionet-data.mimiciv_hosp.diagnoses_icd` 
+    group by hadm_id
+    order by hadm_id
+),
+sepsis as
+(
+    select i.stay_id, max(case when s3.stay_id is not null then 1 else 0 end) as sepsis_flag
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_derived.sepsis3` s3
+    on i.stay_id = s3.stay_id
+    group by i.stay_id
+    order by i.stay_id
+),
+vent as (
+    select i.stay_id, MAX(case when v.ventilation_status in ('Tracheostomy','InvasiveVent') then 1 else 0 end) as invasive_flag,
+    sum(case when v.ventilation_status in ('Tracheostomy','InvasiveVent') 
+    then DATETIME_DIFF(v.endtime, v.starttime, MINUTE) else null end)/60 as venthours 
+  from `physionet-data.mimiciv_derived.icustay_detail` i
+  left join  `physionet-data.mimiciv_derived.ventilation` v
+  on v.stay_id = i.stay_id
+  where v.starttime >= i.icu_intime
+  and v.endtime <= i.icu_outtime
+  group by i.stay_id
+  order by i.stay_id
+),
+rrt as
+(
+  select i.stay_id, MAX(case when r.dialysis_type in ('CVVH','CVVHD','CVVHDF') then 1 else 0 end) as crrt_flag
+  from `physionet-data.mimiciv_derived.icustay_detail` i 
+  left join `physionet-data.mimiciv_derived.rrt` r
+  on r.stay_id = i.stay_id
+  where r.charttime >= i.icu_intime
+  and r.charttime <= i.icu_outtime
+  group by i.stay_id
+  order by i.stay_id
+),
+vasopressor as (
+    select i.stay_id, MAX(case when va.stay_id is not null then 1 else 0 end) as vaso_flag,
+    sum(DATETIME_DIFF(va.endtime, va.starttime, MINUTE))/60 as vasohours,
+    MAX(va.endtime) as vaso_stop
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_derived.vasoactive_agent` va
+    on i.stay_id = va.stay_id
+    where va.starttime >= i.icu_intime
+    and va.endtime <= i.icu_outtime
+    group by i.stay_id
+    order by i.stay_id
+),
+lab as (
+        select i.hadm_id, MAX(c.albumin) as ALB_max, MIN(c.albumin) as ALB_min, 
+        MAX(c.total_protein) as TProtein_max, MIN(c.total_protein) as TProtein_min,
+        MAX(c.glucose) as GLU_max, MIN(c.glucose) as GLU_min,
+        MAX(c.sodium) as Na_max, min(c.sodium) as Na_min,
+        MAX(c.potassium) as K_max, min(c.potassium) as K_min,
+        MAX(e.bilirubin_total) as Tbil_max, MIN(e.bilirubin_total) as Tbil_min,
+        MAX(e.bilirubin_direct) as Dbil_max, MIN(e.bilirubin_direct) as Dbil_min,
+        MAX(e.bilirubin_indirect) as Ibil_max, MIN(e.bilirubin_indirect) as Ibil_min
+        from `physionet-data.mimiciv_derived.icustay_detail` i
+        left join `physionet-data.mimiciv_derived.chemistry` c
+        on i.hadm_id = c.hadm_id
+        and c.charttime >= i.icu_intime and c.charttime <= i.icu_outtime
+        left join `physionet-data.mimiciv_derived.enzyme` e
+        on i.hadm_id = e.hadm_id
+        and e.charttime >= i.icu_intime and e.charttime <= i.icu_outtime
+        group by i.hadm_id
+        order by i.hadm_id
+        ),
+lab1 as (
+    select l0.subject_id,
+    max(case when l0.itemid = 50970 and l0.valuenum >=0 and l0.valuenum <50 then l0.valuenum else null end) as P_max,
+    min(case when l0.itemid = 50970 and l0.valuenum >=0 and l0.valuenum <50 then l0.valuenum else null end) as P_min,
+    max(case when l0.itemid = 51000 and l0.valuenum >=0 and l0.valuenum <2000 then l0.valuenum else null end) as TG_max,
+    min(case when l0.itemid = 51000 and l0.valuenum >=0 and l0.valuenum <2000 then l0.valuenum else null end) as TG_min,
+    max(case when l0.itemid = 50907 and l0.valuenum >=0 and l0.valuenum <1000 then l0.valuenum else null end) as TC_max,
+    min(case when l0.itemid = 50907 and l0.valuenum >=0 and l0.valuenum <1000 then l0.valuenum else null end) as TC_min,
+    max(case when l0.itemid = 50904 and l0.valuenum >=0 and l0.valuenum <500 then l0.valuenum else null end) as HDL_max,
+    min(case when l0.itemid = 50904 and l0.valuenum >=0 and l0.valuenum <500 then l0.valuenum else null end) as HDL_min,
+    max(case when l0.itemid in (50905,50906) and l0.valuenum >=0 and l0.valuenum <500  then l0.valuenum else null end) as LDL_max,
+    min(case when l0.itemid in (50905,50906) and l0.valuenum >=0 and l0.valuenum <500 then l0.valuenum else null end) as LDL_min
+     from 
+     (
+     select i.subject_id, l.charttime, l.itemid, l.valuenum, l.valueuom
+     from `physionet-data.mimiciv_derived.icustay_detail` i
+     left join  `physionet-data.mimiciv_hosp.labevents` l
+     on i.subject_id = l.subject_id
+     where l.itemid in (50970,-- phosphate
+    51000,--Triglycerides,
+    50907,--Cholesterol, Total
+    50904,--Cholesterol, HDL
+    50905,50906--Cholesterol, LDL, Calculated/Measured
+    )
+    and l.charttime >= i.icu_intime and l.charttime <= i.icu_outtime) l0
+    group by l0.subject_id
+    order by l0.subject_id
+),
+glu as (
+        select i.hadm_id, 
+        AVG(case when c.charttime >= i.icu_intime and c.charttime <= DATETIME_ADD(i.icu_intime, INTERVAL 1 DAY) then c.glucose else null end) as d1_glu,
+        AVG(case when c.charttime >  DATETIME_ADD(i.icu_intime, INTERVAL 1 DAY) and c.charttime <= DATETIME_ADD(i.icu_intime, INTERVAL 2 DAY) 
+        then c.glucose else null end) as d2_glu,  
+        AVG(case when c.charttime >  DATETIME_ADD(i.icu_intime, INTERVAL 2 DAY) and c.charttime <= DATETIME_ADD(i.icu_intime, INTERVAL 3 DAY) 
+        then c.glucose else null end) as d3_glu, 
+        AVG(case when c.charttime >  DATETIME_ADD(i.icu_intime, INTERVAL 3 DAY) and c.charttime <= DATETIME_ADD(i.icu_intime, INTERVAL 4 DAY) 
+        then c.glucose else null end) as d4_glu, 
+        AVG(case when c.charttime >  DATETIME_ADD(i.icu_intime, INTERVAL 4 DAY) and c.charttime <= DATETIME_ADD(i.icu_intime, INTERVAL 5 DAY) 
+        then c.glucose else null end) as d5_glu, 
+        AVG(case when c.charttime >  DATETIME_ADD(i.icu_intime, INTERVAL 5 DAY) and c.charttime <= DATETIME_ADD(i.icu_intime, INTERVAL 6 DAY) 
+        then c.glucose else null end) as d6_glu, 
+        AVG(case when c.charttime >  DATETIME_ADD(i.icu_intime, INTERVAL 6 DAY) and c.charttime <= DATETIME_ADD(i.icu_intime, INTERVAL 7 DAY) 
+        then c.glucose else null end) as d7_glu 
+        from `physionet-data.mimiciv_derived.icustay_detail` i
+        left join `physionet-data.mimiciv_derived.chemistry` c
+        on i.hadm_id = c.hadm_id
+        group by i.hadm_id
+        order by i.hadm_id
+),
+infection as (
+    select i.stay_id, max(case when soi.positive_culture = 1 then 1 else 0 end) as infection_flag,
+    max(case when soi.positive_culture = 1 and soi.specimen in ('BLOOD', 'BLOOD CULTURE','BLOOD CULTURE ( MYCO/F LYTIC BOTTLE)',
+    'BLOOD CULTURE - NEONATE','SEROLOGY/BLOOD') then 1 else 0 end) as blood_flag,
+    max(case when soi.positive_culture = 1 and soi.specimen in ('BRONCHIAL BRUSH','BRONCHIAL WASHINGS','BRONCHOALVEOLAR LAVAGE','Rapid Respiratory Viral Screen & Culture',
+    'SPUTUM','THROAT CULTURE','THROAT FOR STREP','TRACHEAL ASPIRATE','Mini-BAL') then 1 else 0 end) as resp_flag,
+    max(case when soi.positive_culture = 1 and soi.specimen in ('CSF;SPINAL FLUID') then 1 else 0 end) as csf_flag,
+    max(case when soi.positive_culture = 1 and soi.specimen in ('PERITONEAL FLUID','PLEURAL FLUID','STOOL','STOOL (RECEIVED IN TRANSPORT SYSTEM)','DIALYSIS FLUID',
+    'BILE') then 1 else 0 end) as gatricintest_flag,
+    max(case when soi.positive_culture = 1 and soi.specimen in ('SKIN SCRAPINGS','PROSTHETIC JOINT FLUID','NAIL SCRAPINGS','JOINT FLUID','FOOT CULTURE','FLUID WOUND',
+    'BONE MARROW') then 1 else 0 end) as skinbone_flag,
+    max(case when soi.positive_culture = 1 and soi.specimen in ('URINE','URINE,KIDNEY','URINE,SUPRAPUBIC ASPIRATE','ANORECTAL/VAGINAL CULTURE') then 1 else 0 end) as uro_flag
+    FROM  `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_derived.suspicion_of_infection` soi
+    on i.stay_id = soi.stay_id
+    where soi.culture_time >= i.icu_intime and soi.culture_time <= i.icu_outtime
+    group by i.stay_id
+    order by i.stay_id
+),
+-- all sources
+-- propofol and dextrose
+-- pn and en
+nu0 as (
+    select i.stay_id, MAX(case when g.itemid = 227079 then 1 else 0 end) as PN_flag,
+    MAX(case when g.itemid in (226221,227080) then 1 else 0 end) as EN_flag,
+    MIN(case when g.itemid = 227079 then g.starttime else null end) as PN_start,
+    MIN(case when g.itemid in (226221,227080) then g.starttime else null end) as EN_start
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.ingredientevents` g
+    on i.stay_id = g.stay_id
+    where g.starttime >= i.icu_intime and g.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 7 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+nud1 as (
+    select i.stay_id, 
+    SUM(case when g.itemid in (226060, 220412) then g.amount else 0 end) as calories_sum,
+    SUM(case when g.itemid = 220454 then g.amount else 0 end) as protein_sum,
+    SUM(case when g.itemid = 220490 then g.amount else 0 end) as volume_sum
+    from `physionet-data.mimiciv_derived.icustay_detail` i 
+    left join `physionet-data.mimiciv_icu.ingredientevents` g 
+    on i.stay_id = g.stay_id
+    where g.starttime >= i.icu_intime and g.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 1 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+nud2 as (
+    select i.stay_id, 
+    SUM(case when g.itemid in (226060, 220412) then g.amount else 0 end) as calories_sum,
+    SUM(case when g.itemid = 220454 then g.amount else 0 end) as protein_sum,
+    SUM(case when g.itemid = 220490 then g.amount else 0 end) as volume_sum
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.ingredientevents` g
+    on i.stay_id = g.stay_id
+    where g.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 1 DAY) and g.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 2 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+nud3 as (
+    select i.stay_id, 
+    SUM(case when g.itemid in (226060, 220412) then g.amount else 0 end) as calories_sum,
+    SUM(case when g.itemid = 220454 then g.amount else 0 end) as protein_sum,
+    SUM(case when g.itemid = 220490 then g.amount else 0 end) as volume_sum
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.ingredientevents` g
+    on i.stay_id = g.stay_id
+    where g.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 2 DAY) and g.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 3 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+nud4 as (
+    select i.stay_id, 
+    SUM(case when g.itemid in (226060, 220412) then g.amount else 0 end) as calories_sum,
+    SUM(case when g.itemid = 220454 then g.amount else 0 end) as protein_sum,
+    SUM(case when g.itemid = 220490 then g.amount else 0 end) as volume_sum
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.ingredientevents` g
+    on i.stay_id = g.stay_id
+    where g.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 3 DAY) and g.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 4 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+nud5 as (
+    select i.stay_id, 
+    SUM(case when g.itemid in (226060, 220412) then g.amount else 0 end) as calories_sum,
+    SUM(case when g.itemid = 220454 then g.amount else 0 end) as protein_sum,
+    SUM(case when g.itemid = 220490 then g.amount else 0 end) as volume_sum
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.ingredientevents` g
+    on i.stay_id = g.stay_id
+    where g.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 4 DAY) and g.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 5 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+nud6 as (
+    select i.stay_id, 
+    SUM(case when g.itemid in (226060, 220412) then g.amount else 0 end) as calories_sum,
+    SUM(case when g.itemid = 220454 then g.amount else 0 end) as protein_sum,
+    SUM(case when g.itemid = 220490 then g.amount else 0 end) as volume_sum
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.ingredientevents` g
+    on i.stay_id = g.stay_id
+    where g.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 5 DAY) and g.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 6 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+nud7 as (
+    select i.stay_id, 
+    SUM(case when g.itemid in (226060, 220412) then g.amount else 0 end) as calories_sum,
+    SUM(case when g.itemid = 220454 then g.amount else 0 end) as protein_sum,
+    SUM(case when g.itemid = 220490 then g.amount else 0 end) as volume_sum
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.ingredientevents` g
+    on i.stay_id = g.stay_id
+    where g.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 6 DAY) and g.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 7 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+nud1_part as(
+    select g.stay_id,
+    SUM(case when g2.itemid in (226221,227080) and g.itemid in (226060, 220412) then g.amount else 0 end) as ENcalories_sum,
+    SUM(case when g2.itemid in (226221,227080) and g.itemid = 220454 then g.amount else 0 end) as ENprotein_sum,
+    SUM(case when g2.itemid in (226221,227080) and g.itemid = 220490 then g.amount else 0 end) as ENvolume_sum,
+    SUM(case when g2.itemid = 227079 and g.itemid in (226060, 220412) then g.amount else 0 end) as PNcalories_sum,
+    SUM(case when g2.itemid = 227079 and g.itemid = 220454 then g.amount else 0 end) as PNprotein_sum,
+    SUM(case when g2.itemid = 227079 and g.itemid = 220490 then g.amount else 0 end) as PNvolume_sum
+    from `physionet-data.mimiciv_icu.ingredientevents` g
+    left join `physionet-data.mimiciv_icu.ingredientevents` g2
+    on g.orderid = g2.orderid
+    left join `physionet-data.mimiciv_derived.icustay_detail` i
+    on i.stay_id = g.stay_id
+    where g.starttime >= i.icu_intime and g.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 1 DAY)
+    group by g.stay_id
+    order by g.stay_id
+),
+nud2_part as(
+    select g.stay_id,
+    SUM(case when g2.itemid in (226221,227080) and g.itemid in (226060, 220412) then g.amount else 0 end) as ENcalories_sum,
+    SUM(case when g2.itemid in (226221,227080) and g.itemid = 220454 then g.amount else 0 end) as ENprotein_sum,
+    SUM(case when g2.itemid in (226221,227080) and g.itemid = 220490 then g.amount else 0 end) as ENvolume_sum,
+    SUM(case when g2.itemid = 227079 and g.itemid in (226060, 220412) then g.amount else 0 end) as PNcalories_sum,
+    SUM(case when g2.itemid = 227079 and g.itemid = 220454 then g.amount else 0 end) as PNprotein_sum,
+    SUM(case when g2.itemid = 227079 and g.itemid = 220490 then g.amount else 0 end) as PNvolume_sum
+    from `physionet-data.mimiciv_icu.ingredientevents` g
+    left join `physionet-data.mimiciv_icu.ingredientevents` g2
+    on g.orderid = g2.orderid
+    left join `physionet-data.mimiciv_derived.icustay_detail` i
+    on i.stay_id = g.stay_id
+    where g.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 1 DAY) and g.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 2 DAY)
+    group by g.stay_id
+    order by g.stay_id
+),    
+nud3_part as(
+    select g.stay_id,
+    SUM(case when g2.itemid in (226221,227080) and g.itemid in (226060, 220412) then g.amount else 0 end) as ENcalories_sum,
+    SUM(case when g2.itemid in (226221,227080) and g.itemid = 220454 then g.amount else 0 end) as ENprotein_sum,
+    SUM(case when g2.itemid in (226221,227080) and g.itemid = 220490 then g.amount else 0 end) as ENvolume_sum,
+    SUM(case when g2.itemid = 227079 and g.itemid in (226060, 220412) then g.amount else 0 end) as PNcalories_sum,
+    SUM(case when g2.itemid = 227079 and g.itemid = 220454 then g.amount else 0 end) as PNprotein_sum,
+    SUM(case when g2.itemid = 227079 and g.itemid = 220490 then g.amount else 0 end) as PNvolume_sum
+    from `physionet-data.mimiciv_icu.ingredientevents` g
+    left join `physionet-data.mimiciv_icu.ingredientevents` g2
+    on g.orderid = g2.orderid
+    left join `physionet-data.mimiciv_derived.icustay_detail` i
+    on i.stay_id = g.stay_id
+    where g.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 2 DAY) and g.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 3 DAY)
+    group by g.stay_id
+    order by g.stay_id
+), 
+nud4_part as(
+    select g.stay_id,
+    SUM(case when g2.itemid in (226221,227080) and g.itemid in (226060, 220412) then g.amount else 0 end) as ENcalories_sum,
+    SUM(case when g2.itemid in (226221,227080) and g.itemid = 220454 then g.amount else 0 end) as ENprotein_sum,
+    SUM(case when g2.itemid in (226221,227080) and g.itemid = 220490 then g.amount else 0 end) as ENvolume_sum,
+    SUM(case when g2.itemid = 227079 and g.itemid in (226060, 220412) then g.amount else 0 end) as PNcalories_sum,
+    SUM(case when g2.itemid = 227079 and g.itemid = 220454 then g.amount else 0 end) as PNprotein_sum,
+    SUM(case when g2.itemid = 227079 and g.itemid = 220490 then g.amount else 0 end) as PNvolume_sum
+    from `physionet-data.mimiciv_icu.ingredientevents` g
+    left join `physionet-data.mimiciv_icu.ingredientevents` g2
+    on g.orderid = g2.orderid
+    left join `physionet-data.mimiciv_derived.icustay_detail` i
+    on i.stay_id = g.stay_id
+    where g.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 3 DAY) and g.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 4 DAY)
+    group by g.stay_id
+    order by g.stay_id
+), 
+nud5_part as(
+    select g.stay_id,
+    SUM(case when g2.itemid in (226221,227080) and g.itemid in (226060, 220412) then g.amount else 0 end) as ENcalories_sum,
+    SUM(case when g2.itemid in (226221,227080) and g.itemid = 220454 then g.amount else 0 end) as ENprotein_sum,
+    SUM(case when g2.itemid in (226221,227080) and g.itemid = 220490 then g.amount else 0 end) as ENvolume_sum,
+    SUM(case when g2.itemid = 227079 and g.itemid in (226060, 220412) then g.amount else 0 end) as PNcalories_sum,
+    SUM(case when g2.itemid = 227079 and g.itemid = 220454 then g.amount else 0 end) as PNprotein_sum,
+    SUM(case when g2.itemid = 227079 and g.itemid = 220490 then g.amount else 0 end) as PNvolume_sum
+    from `physionet-data.mimiciv_icu.ingredientevents` g
+    left join `physionet-data.mimiciv_icu.ingredientevents` g2
+    on g.orderid = g2.orderid
+    left join `physionet-data.mimiciv_derived.icustay_detail` i
+    on i.stay_id = g.stay_id
+    where g.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 4 DAY) and g.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 5 DAY)
+    group by g.stay_id
+    order by g.stay_id
+), 
+nud6_part as(
+    select g.stay_id,
+    SUM(case when g2.itemid in (226221,227080) and g.itemid in (226060, 220412) then g.amount else 0 end) as ENcalories_sum,
+    SUM(case when g2.itemid in (226221,227080) and g.itemid = 220454 then g.amount else 0 end) as ENprotein_sum,
+    SUM(case when g2.itemid in (226221,227080) and g.itemid = 220490 then g.amount else 0 end) as ENvolume_sum,
+    SUM(case when g2.itemid = 227079 and g.itemid in (226060, 220412) then g.amount else 0 end) as PNcalories_sum,
+    SUM(case when g2.itemid = 227079 and g.itemid = 220454 then g.amount else 0 end) as PNprotein_sum,
+    SUM(case when g2.itemid = 227079 and g.itemid = 220490 then g.amount else 0 end) as PNvolume_sum
+    from `physionet-data.mimiciv_icu.ingredientevents` g
+    left join `physionet-data.mimiciv_icu.ingredientevents` g2
+    on g.orderid = g2.orderid
+    left join `physionet-data.mimiciv_derived.icustay_detail` i
+    on i.stay_id = g.stay_id
+    where g.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 5 DAY) and g.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 6 DAY)
+    group by g.stay_id
+    order by g.stay_id
+), 
+nud7_part as(
+    select g.stay_id,
+    SUM(case when g2.itemid in (226221,227080) and g.itemid in (226060, 220412) then g.amount else 0 end) as ENcalories_sum,
+    SUM(case when g2.itemid in (226221,227080) and g.itemid = 220454 then g.amount else 0 end) as ENprotein_sum,
+    SUM(case when g2.itemid in (226221,227080) and g.itemid = 220490 then g.amount else 0 end) as ENvolume_sum,
+    SUM(case when g2.itemid = 227079 and g.itemid in (226060, 220412) then g.amount else 0 end) as PNcalories_sum,
+    SUM(case when g2.itemid = 227079 and g.itemid = 220454 then g.amount else 0 end) as PNprotein_sum,
+    SUM(case when g2.itemid = 227079 and g.itemid = 220490 then g.amount else 0 end) as PNvolume_sum
+    from `physionet-data.mimiciv_icu.ingredientevents` g
+    left join `physionet-data.mimiciv_icu.ingredientevents` g2
+    on g.orderid = g2.orderid
+    left join `physionet-data.mimiciv_derived.icustay_detail` i
+    on i.stay_id = g.stay_id
+    where g.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 6 DAY) and g.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 7 DAY)
+    group by g.stay_id
+    order by g.stay_id
+),
+-- Citrate
+citrate1 as (
+    select i.stay_id, 
+    SUM(case when p1.itemid = 227526 then p1.amount else 0 end)*0.59 as d1_calories_citrate
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.inputevents` p1
+    on i.stay_id = p1.stay_id
+    and p1.starttime >= i.icu_intime and p1.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 1 DAY)   
+    group by i.stay_id
+    order by i.stay_id
+),
+citrate2 as (
+    select i.stay_id,
+    SUM(case when p2.itemid = 227526 then p2.amount else 0 end)*0.59 as d2_calories_citrate
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.inputevents` p2
+    on i.stay_id = p2.stay_id
+    and p2.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 1 DAY) and p2.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 2 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+citrate3 as (
+    select i.stay_id,
+    SUM(case when p3.itemid = 227526 then p3.amount else 0 end)*0.59 as d3_calories_citrate
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.inputevents` p3
+    on i.stay_id = p3.stay_id
+    and p3.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 2 DAY) and p3.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 3 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+citrate4 as (
+    select i.stay_id,
+    SUM(case when p4.itemid = 227526 then p4.amount else 0 end)*0.59 as d4_calories_citrate
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.inputevents` p4
+    on i.stay_id = p4.stay_id
+    and p4.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 3 DAY) and p4.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 4 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+citrate5 as (
+    select i.stay_id,
+    SUM(case when p5.itemid = 227526 then p5.amount else 0 end)*0.59 as d5_calories_citrate
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.inputevents` p5
+    on i.stay_id = p5.stay_id
+    and p5.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 4 DAY) and p5.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 5 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+citrate6 as (
+    select i.stay_id,
+    SUM(case when p6.itemid = 227526 then p6.amount else 0 end)*0.59 as d6_calories_citrate
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.inputevents` p6
+    on i.stay_id = p6.stay_id
+    and p6.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 5 DAY) and p6.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 6 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+citrate7 as (
+    select i.stay_id,
+    SUM(case when p7.itemid = 227526 then p7.amount else 0 end)*0.59 as d7_calories_citrate
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.inputevents` p7
+    on i.stay_id = p7.stay_id
+    and p7.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 6 DAY) and p7.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 7 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+tfresidual1 as 
+(
+    select i.stay_id,
+    sum(case when o.itemid in (227510,227511) then o.value else 0 end) as d1_tfresidual
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.outputevents` o
+    on i.stay_id = o.stay_id
+    where o.charttime >= i.icu_intime and o.charttime <= DATETIME_ADD(i.icu_intime, INTERVAL 1 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+tfresidual2 as 
+(
+    select i.stay_id,
+    sum(case when o.itemid in (227510,227511) then o.value else 0 end) as d2_tfresidual
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.outputevents` o
+    on i.stay_id = o.stay_id
+    where o.charttime > DATETIME_ADD(i.icu_intime, INTERVAL 1 DAY) and o.charttime <= DATETIME_ADD(i.icu_intime, INTERVAL 2 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+tfresidual3 as 
+(
+    select i.stay_id,
+    sum(case when o.itemid in (227510,227511) then o.value else 0 end) as d3_tfresidual
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.outputevents` o
+    on i.stay_id = o.stay_id
+    where o.charttime > DATETIME_ADD(i.icu_intime, INTERVAL 2 DAY) and o.charttime <= DATETIME_ADD(i.icu_intime, INTERVAL 3 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+tfresidual4 as 
+(
+    select i.stay_id,
+    sum(case when o.itemid in (227510,227511) then o.value else 0 end) as d4_tfresidual
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.outputevents` o
+    on i.stay_id = o.stay_id
+    where o.charttime > DATETIME_ADD(i.icu_intime, INTERVAL 3 DAY) and o.charttime <= DATETIME_ADD(i.icu_intime, INTERVAL 4 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+tfresidual5 as 
+(
+    select i.stay_id,
+    sum(case when o.itemid in (227510,227511) then o.value else 0 end) as d5_tfresidual
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.outputevents` o
+    on i.stay_id = o.stay_id
+    where o.charttime > DATETIME_ADD(i.icu_intime, INTERVAL 4 DAY) and o.charttime <= DATETIME_ADD(i.icu_intime, INTERVAL 5 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+tfresidual6 as 
+(
+    select i.stay_id,
+    sum(case when o.itemid in (227510,227511) then o.value else 0 end) as d6_tfresidual
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.outputevents` o
+    on i.stay_id = o.stay_id
+    where o.charttime > DATETIME_ADD(i.icu_intime, INTERVAL 5 DAY) and o.charttime <= DATETIME_ADD(i.icu_intime, INTERVAL 6 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+tfresidual7 as 
+(
+    select i.stay_id,
+    sum(case when o.itemid in (227510,227511) then o.value else 0 end) as d7_tfresidual
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.outputevents` o
+    on i.stay_id = o.stay_id
+    where o.charttime > DATETIME_ADD(i.icu_intime, INTERVAL 6 DAY) and o.charttime <= DATETIME_ADD(i.icu_intime, INTERVAL 7 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+-- insulin daily
+insulin1 as
+(
+    select i.stay_id,
+    sum(case when p.itemid in (223257,223258,223259,223260,223261,223262,229299,229619) then p.amount else 0 end) as d1_insulin
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.inputevents` p
+    on i.stay_id = p.stay_id
+    where p.starttime >= i.icu_intime and p.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 1 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+insulin2 as
+(
+    select i.stay_id,
+    sum(case when p.itemid in (223257,223258,223259,223260,223261,223262,229299,229619) then p.amount else 0 end) as d2_insulin
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.inputevents` p
+    on i.stay_id = p.stay_id
+    where p.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 1 DAY) and p.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 2 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+insulin3 as
+(
+    select i.stay_id,
+    sum(case when p.itemid in (223257,223258,223259,223260,223261,223262,229299,229619) then p.amount else 0 end) as d3_insulin
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.inputevents` p
+    on i.stay_id = p.stay_id
+    where p.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 2 DAY) and p.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 3 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+insulin4 as
+(
+    select i.stay_id,
+    sum(case when p.itemid in (223257,223258,223259,223260,223261,223262,229299,229619) then p.amount else 0 end) as d4_insulin
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.inputevents` p
+    on i.stay_id = p.stay_id
+    where p.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 3 DAY) and p.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 4 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+insulin5 as
+(
+    select i.stay_id,
+    sum(case when p.itemid in (223257,223258,223259,223260,223261,223262,229299,229619) then p.amount else 0 end) as d5_insulin
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.inputevents` p
+    on i.stay_id = p.stay_id
+    where p.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 4 DAY) and p.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 5 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+insulin6 as
+(
+    select i.stay_id,
+    sum(case when p.itemid in (223257,223258,223259,223260,223261,223262,229299,229619) then p.amount else 0 end) as d6_insulin
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.inputevents` p
+    on i.stay_id = p.stay_id
+    where p.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 5 DAY) and p.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 6 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+insulin7 as
+(
+    select i.stay_id,
+    sum(case when p.itemid in (223257,223258,223259,223260,223261,223262,229299,229619) then p.amount else 0 end) as d7_insulin
+    from `physionet-data.mimiciv_derived.icustay_detail` i
+    left join `physionet-data.mimiciv_icu.inputevents` p
+    on i.stay_id = p.stay_id
+    where p.starttime > DATETIME_ADD(i.icu_intime, INTERVAL 6 DAY) and p.starttime <= DATETIME_ADD(i.icu_intime, INTERVAL 7 DAY)
+    group by i.stay_id
+    order by i.stay_id
+),
+-- baseline 
+f as (select 
+i.subject_id, i. hadm_id, i. stay_id, i. gender, i.admission_age, i.race, i.hospstay_seq, i.icustay_seq,
+i.dod, i.admittime, i.dischtime, i.los_hospital, i.hospital_expire_flag,  
+i.icu_intime, i.icu_outtime, i.los_icu,  
+(case when i.dod <= i.icu_outtime then 1 else 0 end) as icu_expire_flag,
+icu.first_careunit,
+extract (day from (i.dod - i.icu_intime)) as survival_durations, 
+h.height, w.weight_admit AS weight, 
+a.admission_type, a.admission_location, a.discharge_location, a.marital_status,
+p.anchor_year_group,
+-- comorbidities
+case when co.diabetes_without_cc = 1 or co.diabetes_with_cc = 1 then 1 else 0 end as diabetes,
+co.myocardial_infarct as MI, co.congestive_heart_failure as CHF, co.cerebrovascular_disease as CVD,
+co.chronic_pulmonary_disease as cpd,
+case when co.malignant_cancer = 1 or co.metastatic_solid_tumor = 1 then 1 else 0 end as cancer,
+c.hypertension_flag, c.ckd_flag,
+sepsis.sepsis_flag,
+-- severity score
+s3.SOFA, lods.LODS, sapsii.sapsii as SAPSII, apsiii.apsiii as APSIII,
+-- interventions
+vent.invasive_flag, vent.venthours, rrt.crrt_flag, vs.vaso_flag, vs.vasohours, vs.vaso_stop,
+-- lab
+l.ALB_max, l.ALB_min, l.TProtein_max, l.TProtein_min, l.GLU_max, l.GLU_min, l.Na_max, l.Na_min, l.K_max, l.K_min,
+l.Tbil_max, l.Tbil_min, l.Dbil_max, l.Dbil_min, l.Ibil_max, l.Ibil_min,
+lab1.P_max, lab1.P_min, lab1.TG_max, lab1.TG_min, lab1.TC_max, lab1.TC_min, lab1.HDL_max, lab1.HDL_min, lab1.LDL_max, lab1.LDL_min,
+case when l.GLU_max > 180 then 1 else 0 end as hyperglu_flag,
+case when l.GLU_min < 45 then 1 else 0 end as hypoglu_flag,
+-- glu daily
+glu.d1_glu, glu.d2_glu, glu.d3_glu, glu.d4_glu, glu.d5_glu, glu.d6_glu, glu.d7_glu,
+-- nutrition
+nu0.PN_flag, nu0.EN_flag, nu0.PN_start, nu0.EN_start,
+-- day1
+(nud1.calories_sum + c1.d1_calories_citrate) as d1_calories_all, nud1.protein_sum as d1_protein_all, nud1.volume_sum as d1_vol_all, 
+nud1_part.ENcalories_sum as d1_calories_EN, nud1_part.ENprotein_sum as d1_protein_EN, nud1_part.ENvolume_sum as d1_vol_EN, 
+nud1_part.PNcalories_sum as d1_calories_PN, nud1_part.PNprotein_sum as d1_protein_PN, nud1_part.PNvolume_sum as d1_vol_PN,
+-- day2
+(nud2.calories_sum + c2.d2_calories_citrate) as d2_calories_all, nud2.protein_sum as d2_protein_all, nud2.volume_sum as d2_vol_all, 
+nud2_part.ENcalories_sum as d2_calories_EN, nud2_part.ENprotein_sum as d2_protein_EN, nud2_part.ENvolume_sum as d2_vol_EN, 
+nud2_part.PNcalories_sum as d2_calories_PN, nud2_part.PNprotein_sum as d2_protein_PN, nud2_part.PNvolume_sum as d2_vol_PN,
+-- day3
+(nud3.calories_sum + c3.d3_calories_citrate) as d3_calories_all, nud3.protein_sum as d3_protein_all, nud3.volume_sum as d3_vol_all, 
+nud3_part.ENcalories_sum as d3_calories_EN, nud3_part.ENprotein_sum as d3_protein_EN, nud3_part.ENvolume_sum as d3_vol_EN, 
+nud3_part.PNcalories_sum as d3_calories_PN, nud3_part.PNprotein_sum as d3_protein_PN, nud3_part.PNvolume_sum as d3_vol_PN,
+-- day4
+(nud4.calories_sum + c4.d4_calories_citrate) as d4_calories_all, nud4.protein_sum as d4_protein_all, nud4.volume_sum as d4_vol_all, 
+nud4_part.ENcalories_sum as d4_calories_EN, nud4_part.ENprotein_sum as d4_protein_EN, nud4_part.ENvolume_sum as d4_vol_EN, 
+nud4_part.PNcalories_sum as d4_calories_PN, nud4_part.PNprotein_sum as d4_protein_PN, nud4_part.PNvolume_sum as d4_vol_PN,
+-- day5
+(nud5.calories_sum + c5.d5_calories_citrate) as d5_calories_all, nud5.protein_sum as d5_protein_all, nud5.volume_sum as d5_vol_all, 
+nud5_part.ENcalories_sum as d5_calories_EN, nud5_part.ENprotein_sum as d5_protein_EN, nud5_part.ENvolume_sum as d5_vol_EN, 
+nud5_part.PNcalories_sum as d5_calories_PN, nud5_part.PNprotein_sum as d5_protein_PN, nud5_part.PNvolume_sum as d5_vol_PN,
+-- day6
+(nud6.calories_sum + c6.d6_calories_citrate) as d6_calories_all, nud6.protein_sum as d6_protein_all, nud6.volume_sum as d6_vol_all, 
+nud6_part.ENcalories_sum as d6_calories_EN, nud6_part.ENprotein_sum as d6_protein_EN, nud6_part.ENvolume_sum as d6_vol_EN, 
+nud6_part.PNcalories_sum as d6_calories_PN, nud6_part.PNprotein_sum as d6_protein_PN, nud6_part.PNvolume_sum as d6_vol_PN,
+-- day7
+(nud7.calories_sum + c7.d7_calories_citrate) as d7_calories_all, nud7.protein_sum as d7_protein_all, nud7.volume_sum as d7_vol_all, 
+nud7_part.ENcalories_sum as d7_calories_EN, nud7_part.ENprotein_sum as d7_protein_EN, nud7_part.ENvolume_sum as d7_vol_EN, 
+nud7_part.PNcalories_sum as d7_calories_PN, nud7_part.PNprotein_sum as d7_protein_PN, nud7_part.PNvolume_sum as d7_vol_PN,
+-- other event
+inf.infection_flag, inf.blood_flag, inf.resp_flag, inf.csf_flag, inf.gatricintest_flag, inf.skinbone_flag, inf.uro_flag,
+-- insulin
+insulin1.d1_insulin, insulin2.d2_insulin, insulin3.d3_insulin, insulin4.d4_insulin, insulin5.d5_insulin, insulin6.d6_insulin, insulin7.d7_insulin,
+-- gastric residual
+tfresidual1.d1_tfresidual, tfresidual2.d2_tfresidual, tfresidual3.d3_tfresidual, tfresidual4.d4_tfresidual, 
+tfresidual5.d5_tfresidual, tfresidual6.d6_tfresidual, tfresidual7.d7_tfresidual, 
+ROW_NUMBER() OVER (PARTITION BY i.subject_id ORDER BY i.hospstay_seq, i.icustay_seq) as seqnum
+from `physionet-data.mimiciv_derived.icustay_detail`  i
+left join `physionet-data.mimiciv_icu.icustays` icu
+on i.stay_id = icu.stay_id
+left join height h 
+on i.stay_id = h.stay_id
+left join `physionet-data.mimiciv_derived.first_day_weight` w 
+on i.stay_id = w.stay_id
+left join `physionet-data.mimiciv_hosp.admissions` a 
+on i.hadm_id = a.hadm_id
+left join `physionet-data.mimic_core.patients` p 
+on i.subject_id = p.subject_id
+left join `physionet-data.mimiciv_derived.charlson`  co 
+on i.hadm_id = co.hadm_id 
+left join comorbidities c
+on i.hadm_id = c.hadm_id 
+left join sepsis
+on i.stay_id = sepsis.stay_id
+left join `physionet-data.mimiciv_derived.first_day_sofa` s3
+on i.stay_id = s3.stay_id
+left join `physionet-data.mimiciv_derived.lods` lods
+on i.stay_id = lods.stay_id
+left join `physionet-data.mimiciv_derived.sapsii`  sapsii
+on i.stay_id = sapsii.stay_id
+left join `physionet-data.mimiciv_derived.apsiii` apsiii
+on i.stay_id = apsiii.stay_id
+left join vent
+on i.stay_id = vent.stay_id
+left join rrt
+on i.stay_id = rrt.stay_id
+left join vasopressor vs
+on i.stay_id = vs.stay_id
+left join lab l
+on i.hadm_id = l.hadm_id
+left join lab1
+on i.subject_id = lab1.subject_id
+left join infection inf
+on i.stay_id = inf.stay_id
+left join nu0
+on i.stay_id = nu0.stay_id
+left join nud1
+on i.stay_id = nud1.stay_id
+left join nud1_part
+on i.stay_id = nud1_part.stay_id
+left join nud2
+on i.stay_id = nud2.stay_id
+left join nud2_part
+on i.stay_id = nud2_part.stay_id
+left join nud3
+on i.stay_id = nud3.stay_id
+left join nud3_part
+on i.stay_id = nud3_part.stay_id
+left join nud4
+on i.stay_id = nud4.stay_id
+left join nud4_part
+on i.stay_id = nud4_part.stay_id
+left join nud5
+on i.stay_id = nud5.stay_id
+left join nud5_part
+on i.stay_id = nud5_part.stay_id
+left join nud6
+on i.stay_id = nud6.stay_id
+left join nud6_part
+on i.stay_id = nud6_part.stay_id
+left join nud7
+on i.stay_id = nud7.stay_id
+left join nud7_part
+on i.stay_id = nud7_part.stay_id
+left join citrate1 c1
+on i.stay_id = c1.stay_id
+left join citrate2 c2
+on i.stay_id = c2.stay_id
+left join citrate3 c3
+on i.stay_id = c3.stay_id
+left join citrate4 c4
+on i.stay_id = c4.stay_id
+left join citrate5 c5
+on i.stay_id = c5.stay_id
+left join citrate6 c6
+on i.stay_id = c6.stay_id
+left join citrate7 c7
+on i.stay_id = c7.stay_id
+left join tfresidual1
+on i.stay_id = tfresidual1.stay_id
+left join tfresidual2
+on i.stay_id = tfresidual2.stay_id
+left join tfresidual3
+on i.stay_id = tfresidual3.stay_id
+left join tfresidual4
+on i.stay_id = tfresidual4.stay_id
+left join tfresidual5
+on i.stay_id = tfresidual5.stay_id
+left join tfresidual6
+on i.stay_id = tfresidual6.stay_id
+left join tfresidual7
+on i.stay_id = tfresidual7.stay_id
+left join glu
+on i.hadm_id = glu.hadm_id
+left join insulin1
+on i.stay_id = insulin1.stay_id
+left join insulin2
+on i.stay_id = insulin2.stay_id
+left join insulin3
+on i.stay_id = insulin3.stay_id
+left join insulin4
+on i.stay_id = insulin4.stay_id
+left join insulin5
+on i.stay_id = insulin5.stay_id
+left join insulin6
+on i.stay_id = insulin6.stay_id
+left join insulin7
+on i.stay_id = insulin7.stay_id
+)
+select * from f where f.seqnum = 1
