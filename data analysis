@@ -5,8 +5,6 @@ pacman::p_load(dplyr, GGally, ggplot2, ggthemes, ggvis, httr, lubridate,
 
 cal <- import("C:/File/Study/Data Mining/Nutrition study/MIMICIV.nutrition.rawdata2.csv")
 
-load(file = "C:/File/Study/Data Mining/Nutrition study/cal.rda")
-
 # adult
 cal <- cal[cal$admission_age >= 18,]
 # los >= 7
@@ -214,33 +212,6 @@ cal$REE <- ifelse(cal$invasive_flag == 1,
 cal$calories_REE_percent <- cal$d4t7_calories_all_kg/(cal$REE/cal$idweight)
 
 
-# save final cohort
-write.csv(cal,"C:/File/Study/Data Mining/Nutrition study/MIMICIV.nutrition.process1.csv", row.names = FALSE)
-save(cal, file = "C:/File/Study/Data Mining/Nutrition study/cal.rda")
-
-cal_part <- cal[, c("d4t7_group","d1_calories_all_kg","d2_calories_all_kg","d3_calories_all_kg","d4_calories_all_kg",  
-                    "d5_calories_all_kg","d6_calories_all_kg","d7_calories_all_kg","d1_protein_all_kg","d2_protein_all_kg",
-                    "d3_protein_all_kg","d4_protein_all_kg","d5_protein_all_kg","d6_protein_all_kg",  
-                    "d7_protein_all_kg","d1_calories_all","d1_protein_all","d1_vol_all","d1_calories_EN","d1_protein_EN","d1_vol_EN",
-                    "d1_calories_PN","d1_protein_PN","d1_vol_PN","d2_calories_all","d2_protein_all","d2_vol_all",          
-                    "d2_calories_EN","d2_protein_EN","d2_vol_EN","d2_calories_PN","d2_protein_PN","d2_vol_PN",           
-                    "d3_calories_all","d3_protein_all","d3_vol_all","d3_calories_EN","d3_protein_EN","d3_vol_EN",           
-                    "d3_calories_PN","d3_protein_PN","d3_vol_PN" ,"d4_calories_all","d4_protein_all","d4_vol_all",          
-                    "d4_calories_EN","d4_protein_EN","d4_vol_EN","d4_calories_PN","d4_protein_PN","d4_vol_PN",           
-                    "d5_calories_all","d5_protein_all","d5_vol_all","d5_calories_EN","d5_protein_EN","d5_vol_EN",           
-                    "d5_calories_PN","d5_protein_PN","d5_vol_PN","d6_calories_all","d6_protein_all","d6_vol_all",          
-                    "d6_calories_EN","d6_protein_EN","d6_vol_EN","d6_calories_PN","d6_protein_PN","d6_vol_PN",           
-                    "d7_calories_all","d7_protein_all","d7_vol_all","d7_calories_EN","d7_protein_EN","d7_vol_EN",           
-                    "d7_calories_PN", "d7_protein_PN","d7_vol_PN","d1_insulin","d2_insulin","d3_insulin","d4_insulin",
-                    "d5_insulin","d6_insulin","d7_insulin","d1_tfresidual","d2_tfresidual","d3_tfresidual","d4_tfresidual",       
-                    "d5_tfresidual","d6_tfresidual","d7_tfresidual","d1_glu","d2_glu","d3_glu","d4_glu","d5_glu","d6_glu","d7_glu")]
-
-table0 <- tableby(d4t7_protein_group ~ d4t7_group,
-                  data = cal, control = my_controls)
-summary(table0, text = TRUE)
-                          
-write.csv(cal_part,"C:/File/Study/Data Mining/Nutrition study/MIMICIV.nutrition.picsample.csv", row.names = FALSE)
-
 # table 1: baseline features
 my_controls <- tableby.control(
   test = T,
@@ -401,23 +372,6 @@ h1 <- ggsurvplot(
   legend.labs = c("Hypocaloric", "Normocaloric"), 
   censor=FALSE,
   ggtheme = theme_gray(), title = "1-year survival curve") 
-
-
-# non-nutritional
-cal$d1_calories_nonutri <- cal$d1_calories_all - cal$d1_calories_EN - cal$d1_calories_PN
-cal$d2_calories_nonutri <- cal$d2_calories_all - cal$d2_calories_EN - cal$d2_calories_PN
-cal$d3_calories_nonutri <- cal$d3_calories_all - cal$d3_calories_EN - cal$d3_calories_PN
-cal$d4_calories_nonutri <- cal$d4_calories_all - cal$d4_calories_EN - cal$d4_calories_PN
-cal$d5_calories_nonutri <- cal$d5_calories_all - cal$d5_calories_EN - cal$d5_calories_PN
-cal$d6_calories_nonutri <- cal$d6_calories_all - cal$d6_calories_EN - cal$d6_calories_PN
-cal$d7_calories_nonutri <- cal$d7_calories_all - cal$d7_calories_EN - cal$d7_calories_PN
-
-table01 <- tableby(d4t7_group ~ d1_calories_all+d2_calories_all+d3_calories_all+d4_calories_all+d5_calories_all+d6_calories_all+d7_calories_all
-                   +d1_calories_EN+d2_calories_EN+d3_calories_EN+d4_calories_EN+d5_calories_EN+d6_calories_EN+d7_calories_EN
-                   +d1_calories_PN+d2_calories_PN+d3_calories_PN+d4_calories_PN+d5_calories_PN+d6_calories_PN+d7_calories_PN
-                   +d1_calories_nonutri+d2_calories_nonutri+d3_calories_nonutri+d4_calories_nonutri+d5_calories_nonutri+d6_calories_nonutri+d7_calories_nonutri,
-                  data = cal, control = my_controls)
-summary(table01, text = TRUE)
 
 
 # spine
