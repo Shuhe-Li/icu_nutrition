@@ -21,4 +21,4 @@ Compared to normocaloric feeding after day 3, hypocaloric feeding significantly 
 Nutrition; Hypocaloric; Normocaloric; Critical illness; Medical Information Mart for Intensive Care IV; Real-world study
 
 ## Related paper
-Shuhe Li, Huan Ma, Yao Tang et al. Hypocaloric versus normocaloric nutrition in critically ill patients: a real-world study of a large database MIMIC-IV. , 23 November 2022, PREPRINT (Version 1) available at Research Square [DOI: 10.21203/rs.3.rs-2290999/v1]
+Shuhe Li, Huan Ma, Yao Tang et al. Hypocaloric versus normocaloric nutrition in critically ill patients: a real-world study of a large database MIMIC-IV. , 23 November 2022, PREPRINT (Version 1) available at Research Square [http://doi.org/10.21203/rs.3.rs-2290999/v1]
